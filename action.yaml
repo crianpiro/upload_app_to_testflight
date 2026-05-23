@@ -1,0 +1,280 @@
+name: Upload App to TestFlight
+description: Upload a pre-built iOS IPA to App Store Connect / TestFlight, wait for processing, post release notes and set encryption compliance
+branding:
+  color: blue
+  icon: upload-cloud
+inputs:
+  working-directory:
+    description: The root directory of the Flutter app within this repository (used to read pubspec.yaml and the Xcode project for the bundle id and build number)
+    default: ./
+  ipa-path:
+    description: Path to the pre-built .ipa file to upload (absolute, or relative to the workspace)
+    required: true
+  app-store-connect-api-key-id:
+    description: App Store Connect API key id (the "kid")
+    required: true
+  app-store-connect-api-issuer-id:
+    description: App Store Connect API issuer id
+    required: true
+  app-store-connect-api-key-base64:
+    description: Base64-encoded App Store Connect API private key (.p8 file contents)
+    required: true
+  release-notes:
+    description: Release notes posted to the TestFlight build localization (the What's New field). Leave empty to skip.
+    required: false
+    default: ""
+  locale:
+    description: Locale used when creating the TestFlight beta build localization
+    required: false
+    default: en-US
+  uses-non-exempt-encryption:
+    description: >-
+      Value for the build's encryption compliance flag (usesNonExemptEncryption).
+      Set to 'false' for apps that use only exempt encryption, or 'true' otherwise.
+      Leave empty to skip setting it (e.g. when ITSAppUsesNonExemptEncryption is declared in Info.plist).
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Select latest Xcode version
+      shell: bash
+      run: |
+        latest_xcode=$(ls /Applications | grep '^Xcode' | sort -V | tail -n 1)
+        sudo xcode-select -s /Applications/$latest_xcode
+        echo "[INFO] Xcode version selected: $latest_xcode"
+
+    - name: Create App Store Connect API private key
+      shell: bash
+      env:
+        APPLE_API_KEY_BASE64: ${{ inputs.app-store-connect-api-key-base64 }}
+        APPLE_API_KEY_ID: ${{ inputs.app-store-connect-api-key-id }}
+      run: |
+        mkdir -p "$RUNNER_TEMP/private_keys"
+        echo -n "$APPLE_API_KEY_BASE64" | base64 --decode -o "$RUNNER_TEMP/private_keys/AuthKey_$APPLE_API_KEY_ID.p8"
+
+    # Upload the IPA artifact to App Store Connect.
+    - name: Upload to App Store Connect
+      shell: bash
+      env:
+        APPLE_API_KEY_ID: ${{ inputs.app-store-connect-api-key-id }}
+        APPLE_API_KEY_ISSUER_ID: ${{ inputs.app-store-connect-api-issuer-id }}
+        # Tell altool where to find AuthKey_<id>.p8
+        API_PRIVATE_KEYS_DIR: ${{ runner.temp }}/private_keys
+      run: |
+        xcrun altool --upload-app --type ios \
+          -f "${{ inputs.ipa-path }}" \
+          --apiKey "$APPLE_API_KEY_ID" \
+          --apiIssuer "$APPLE_API_KEY_ISSUER_ID"
+
+    - name: Install PyJWT
+      shell: bash
+      run: pip3 install pyjwt cryptography --break-system-packages --quiet
+
+    - name: Generate App Store Connect JWT
+      id: asc_jwt
+      shell: bash
+      env:
+        APPLE_API_KEY_ID: ${{ inputs.app-store-connect-api-key-id }}
+        APPLE_API_KEY_ISSUER_ID: ${{ inputs.app-store-connect-api-issuer-id }}
+        KEY_PATH: ${{ runner.temp }}/private_keys/AuthKey_${{ inputs.app-store-connect-api-key-id }}.p8
+      run: |
+        JWT=$(python3 - <<'EOF'
+        import jwt, time, os
+
+        key_id   = os.environ["APPLE_API_KEY_ID"]
+        issuer   = os.environ["APPLE_API_KEY_ISSUER_ID"]
+        key_path = os.environ["KEY_PATH"]
+
+        private_key = open(key_path).read()
+
+        payload = {
+            "iss": issuer,
+            "iat": int(time.time()),
+            "exp": int(time.time()) + 1200,
+            "aud": "appstoreconnect-v1"
+        }
+
+        token = jwt.encode(payload, private_key, algorithm="ES256", headers={"kid": key_id})
+        print(token)
+        EOF
+        )
+        echo "::add-mask::$JWT"
+        echo "jwt=$JWT" >> "$GITHUB_OUTPUT"
+
+    - name: Wait for build to appear in App Store Connect
+      id: wait_for_build
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        JWT: ${{ steps.asc_jwt.outputs.jwt }}
+      run: |
+        # Read bundle ID from the Xcode project
+        BUNDLE_ID=$(grep -r "PRODUCT_BUNDLE_IDENTIFIER" ios/Runner.xcodeproj/project.pbxproj \
+          | head -1 \
+          | sed 's/.*PRODUCT_BUNDLE_IDENTIFIER = \(.*\);/\1/' \
+          | tr -d '[:space:]')
+
+        echo "Bundle ID: $BUNDLE_ID"
+
+        if [ -z "$BUNDLE_ID" ]; then
+          echo "ERROR: Could not read bundle ID from Xcode project."
+          exit 1
+        fi
+
+        echo "Resolving App ID for bundle: $BUNDLE_ID"
+
+        APP_RESPONSE=$(curl -s -g \
+          "https://api.appstoreconnect.apple.com/v1/apps?filter[bundleId]=$BUNDLE_ID" \
+          -H "Authorization: Bearer $JWT")
+
+        echo "App lookup response: $APP_RESPONSE"
+
+        APP_ID=$(echo "$APP_RESPONSE" | python3 -c \
+          "import sys,json
+        d=json.load(sys.stdin)
+        if not d.get('data'):
+            print('ERROR: No app found. Check bundle ID and API key permissions.', file=sys.stderr)
+            sys.exit(1)
+        print(d['data'][0]['id'])")
+
+        echo "App ID resolved: $APP_ID"
+
+        BUILD_NUMBER=$(grep "^version:" pubspec.yaml \
+          | sed 's/version: [^+]*+//')
+
+        echo "Looking for build number: $BUILD_NUMBER"
+
+        BUILD_ID=""
+        for i in $(seq 1 30); do
+          RESPONSE=$(curl -s -g \
+            "https://api.appstoreconnect.apple.com/v1/builds?filter[app]=$APP_ID&filter[version]=$BUILD_NUMBER&limit=1" \
+            -H "Authorization: Bearer $JWT")
+
+          echo "Build lookup attempt $i response: $RESPONSE"
+
+          BUILD_ID=$(echo "$RESPONSE" | python3 -c \
+            "import sys,json; d=json.load(sys.stdin)['data']; print(d[0]['id'] if d else '')" 2>/dev/null || true)
+
+          if [ -n "$BUILD_ID" ]; then
+            echo "Build found: $BUILD_ID"
+            break
+          fi
+
+          echo "Attempt $i/30 - build not yet available, waiting 30s..."
+          sleep 30
+        done
+
+        if [ -z "$BUILD_ID" ]; then
+          echo "ERROR: Build did not appear in App Store Connect after 15 minutes."
+          exit 1
+        fi
+
+        echo "build_id=$BUILD_ID" >> "$GITHUB_OUTPUT"
+
+    # Post the release notes to the build.
+    - name: Post TestFlight release notes
+      if: ${{ inputs.release-notes != '' }}
+      shell: bash
+      env:
+        JWT: ${{ steps.asc_jwt.outputs.jwt }}
+        BUILD_ID: ${{ steps.wait_for_build.outputs.build_id }}
+        WHATS_NEW: ${{ inputs.release-notes }}
+        LOCALE: ${{ inputs.locale }}
+      run: |
+        # Check whether a localization record already exists for this build
+        LOC_RESPONSE=$(curl -s \
+          "https://api.appstoreconnect.apple.com/v1/builds/$BUILD_ID/betaBuildLocalizations" \
+          -H "Authorization: Bearer $JWT")
+
+        LOC_ID=$(echo "$LOC_RESPONSE" | python3 -c \
+          "import sys,json; d=json.load(sys.stdin)['data']; print(d[0]['id'] if d else '')" 2>/dev/null || true)
+
+        # Escape the notes for JSON (handles newlines, quotes, etc.)
+        WHATS_NEW_JSON=$(python3 -c \
+          "import json,os; print(json.dumps(os.environ['WHATS_NEW']))")
+
+        if [ -n "$LOC_ID" ]; then
+          echo "Updating existing localization: $LOC_ID"
+          curl -s -X PATCH \
+            "https://api.appstoreconnect.apple.com/v1/betaBuildLocalizations/$LOC_ID" \
+            -H "Authorization: Bearer $JWT" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"data\": {
+                \"type\": \"betaBuildLocalizations\",
+                \"id\": \"$LOC_ID\",
+                \"attributes\": { \"whatsNew\": $WHATS_NEW_JSON }
+              }
+            }"
+        else
+          echo "Creating new localization record..."
+          curl -s -X POST \
+            "https://api.appstoreconnect.apple.com/v1/betaBuildLocalizations" \
+            -H "Authorization: Bearer $JWT" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"data\": {
+                \"type\": \"betaBuildLocalizations\",
+                \"attributes\": {
+                  \"whatsNew\": $WHATS_NEW_JSON,
+                  \"locale\": \"$LOCALE\"
+                },
+                \"relationships\": {
+                  \"build\": {
+                    \"data\": { \"type\": \"builds\", \"id\": \"$BUILD_ID\" }
+                  }
+                }
+              }
+            }"
+        fi
+
+        echo "Release notes posted successfully."
+
+    - name: Set encryption compliance
+      if: ${{ inputs.uses-non-exempt-encryption != '' }}
+      shell: bash
+      env:
+        JWT: ${{ steps.asc_jwt.outputs.jwt }}
+        BUILD_ID: ${{ steps.wait_for_build.outputs.build_id }}
+        USES_NON_EXEMPT_ENCRYPTION: ${{ inputs.uses-non-exempt-encryption }}
+      run: |
+        if [ "$USES_NON_EXEMPT_ENCRYPTION" != "true" ] && [ "$USES_NON_EXEMPT_ENCRYPTION" != "false" ]; then
+          echo "ERROR: uses-non-exempt-encryption must be 'true', 'false', or empty (got '$USES_NON_EXEMPT_ENCRYPTION')."
+          exit 1
+        fi
+
+        echo "Setting encryption compliance (usesNonExemptEncryption=$USES_NON_EXEMPT_ENCRYPTION) for build: $BUILD_ID"
+
+        RESPONSE=$(curl -s -X PATCH \
+          "https://api.appstoreconnect.apple.com/v1/builds/$BUILD_ID" \
+          -H "Authorization: Bearer $JWT" \
+          -H "Content-Type: application/json" \
+          -d "{
+            \"data\": {
+              \"type\": \"builds\",
+              \"id\": \"$BUILD_ID\",
+              \"attributes\": {
+                \"usesNonExemptEncryption\": $USES_NON_EXEMPT_ENCRYPTION
+              }
+            }
+          }")
+
+        echo "Encryption compliance response: $RESPONSE"
+
+        # Verify no errors in response
+        ERROR=$(echo "$RESPONSE" | python3 -c \
+          "import sys,json
+        d=json.load(sys.stdin)
+        errors=d.get('errors', [])
+        if errors:
+            print(errors[0].get('detail', 'Unknown error'))
+        " 2>/dev/null || true)
+
+        if [ -n "$ERROR" ]; then
+          echo "ERROR: Failed to set encryption compliance: $ERROR"
+          exit 1
+        fi
+
+        echo "Encryption compliance set successfully."

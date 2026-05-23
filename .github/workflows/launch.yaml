@@ -1,0 +1,55 @@
+name: Build & upload example to TestFlight
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+# This workflow demonstrates how to consume the upload_app_to_testflight action.
+# It builds and signs the IPA with crianpiro/build_flutter_app, then hands the
+# resulting .ipa path to this action, which uploads it to App Store Connect and
+# finishes the TestFlight setup.
+#
+# Required repository secrets:
+#   P12_BASE64                  base64 of the signing certificate (.p12)
+#   P12_PASSWORD                password for the .p12
+#   PROVISIONING_PROFILE_BASE64 base64 of the .mobileprovision
+#   RUNNER_KEYCHAIN_PASSWORD    any password used for the temporary keychain
+#   EXPORT_OPTIONS              raw Xcode ExportOptions.plist contents (XML)
+#   ASC_API_KEY_ID              App Store Connect API key id
+#   ASC_API_ISSUER_ID           App Store Connect API issuer id
+#   ASC_API_KEY_BASE64          base64 of the App Store Connect API key (.p8)
+#   RELEASE_NOTES               (optional) "what's new" text for the build
+
+jobs:
+  build_and_upload:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build signed IPA
+        uses: crianpiro/build_flutter_app@v2
+        with:
+          platform: ios
+          working-directory: example
+          certificate-base64: ${{ secrets.P12_BASE64 }}
+          certificate-password: ${{ secrets.P12_PASSWORD }}
+          provisioning-profile-base64: ${{ secrets.PROVISIONING_PROFILE_BASE64 }}
+          keychain-password: ${{ secrets.RUNNER_KEYCHAIN_PASSWORD }}
+          export-options-plist: ${{ secrets.EXPORT_OPTIONS }}
+
+      - name: Upload to TestFlight
+        uses: ./
+        with:
+          working-directory: example
+          # build_flutter_app writes the iOS artifact to
+          # <working-directory>/build/ios/ipa/app-release.ipa
+          ipa-path: example/build/ios/ipa/app-release.ipa
+          app-store-connect-api-key-id: ${{ secrets.ASC_API_KEY_ID }}
+          app-store-connect-api-issuer-id: ${{ secrets.ASC_API_ISSUER_ID }}
+          app-store-connect-api-key-base64: ${{ secrets.ASC_API_KEY_BASE64 }}
+          release-notes: ${{ secrets.RELEASE_NOTES }}
+          uses-non-exempt-encryption: "false"

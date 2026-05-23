@@ -1,5 +1,5 @@
 name: Upload Build to TestFlight
-description: Upload a pre-built iOS IPA to App Store Connect / TestFlight, wait for processing, post release notes and set encryption compliance
+description: Upload a pre-built iOS IPA to App Store Connect / TestFlight.
 branding:
   color: blue
   icon: upload-cloud

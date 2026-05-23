@@ -1,4 +1,4 @@
-# upload_app_to_testflight
+# upload_build_to_testflight
 
 A composite GitHub Action that uploads a **pre-built iOS `.ipa`** to App Store Connect / TestFlight and finishes the post-upload setup:
 
@@ -15,7 +15,7 @@ A composite GitHub Action that uploads a **pre-built iOS `.ipa`** to App Store C
 
 ```yaml
 - name: Upload to TestFlight
-  uses: crianpiro/upload_app_to_testflight@v1
+  uses: crianpiro/upload_build_to_testflight@v1
   with:
     working-directory: example
     ipa-path: ${{ steps.ipa.outputs.path }}

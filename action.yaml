@@ -63,10 +63,35 @@ runs:
         # Tell altool where to find AuthKey_<id>.p8
         API_PRIVATE_KEYS_DIR: ${{ runner.temp }}/private_keys
       run: |
-        xcrun altool --upload-app --type ios \
-          -f "${{ inputs.ipa-path }}" \
+        IPA="${{ inputs.ipa-path }}"
+
+        # Fail early (with a useful listing) if the IPA isn't where we expect.
+        if [ ! -f "$IPA" ]; then
+          echo "::error::IPA not found at '$IPA'."
+          echo "Contents of '$(dirname "$IPA")':"
+          ls -la "$(dirname "$IPA")" 2>/dev/null || echo "  (directory does not exist)"
+          exit 1
+        fi
+
+        # altool's exit code is unreliable: it can print "ERROR: ..." and still
+        # exit 0. So capture the output and treat any non-zero status OR an
+        # ERROR line in the output as a failure.
+        set +e
+        OUTPUT=$(xcrun altool --upload-app --type ios \
+          -f "$IPA" \
           --apiKey "$APPLE_API_KEY_ID" \
-          --apiIssuer "$APPLE_API_KEY_ISSUER_ID"
+          --apiIssuer "$APPLE_API_KEY_ISSUER_ID" 2>&1)
+        STATUS=$?
+        set -e
+
+        echo "$OUTPUT"
+
+        if [ "$STATUS" -ne 0 ] || echo "$OUTPUT" | grep -q "ERROR"; then
+          echo "::error::Upload to App Store Connect failed (altool status: $STATUS)."
+          exit 1
+        fi
+
+        echo "Upload to App Store Connect succeeded."
 
     - name: Install PyJWT
       shell: bash

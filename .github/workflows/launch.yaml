@@ -46,8 +46,9 @@ jobs:
         with:
           working-directory: example
           # build_flutter_app writes the iOS artifact to
-          # <working-directory>/build/ios/ipa/app-release.ipa
-          ipa-path: example/build/ios/ipa/app-release.ipa
+          # <working-directory>/build/ios/ipa/app-release.ipa, and ipa-path is
+          # resolved relative to working-directory.
+          ipa-path: build/ios/ipa/app-release.ipa
           app-store-connect-api-key-id: ${{ secrets.ASC_API_KEY_ID }}
           app-store-connect-api-issuer-id: ${{ secrets.ASC_API_ISSUER_ID }}
           app-store-connect-api-key-base64: ${{ secrets.ASC_API_KEY_BASE64 }}

@@ -8,7 +8,7 @@ inputs:
     description: The root directory of the Flutter app within this repository (used to read pubspec.yaml and the Xcode project for the bundle id and build number)
     default: ./
   ipa-path:
-    description: Path to the pre-built .ipa file to upload (absolute, or relative to the workspace)
+    description: Path to the pre-built .ipa file to upload (absolute, or relative to working-directory)
     required: true
   app-store-connect-api-key-id:
     description: App Store Connect API key id (the "kid")
@@ -40,6 +40,7 @@ runs:
   steps:
     - name: Select latest Xcode version
       shell: bash
+      working-directory: ${{ inputs.working-directory }}
       run: |
         latest_xcode=$(ls /Applications | grep '^Xcode' | sort -V | tail -n 1)
         sudo xcode-select -s /Applications/$latest_xcode
@@ -47,6 +48,7 @@ runs:
 
     - name: Create App Store Connect API private key
       shell: bash
+      working-directory: ${{ inputs.working-directory }}
       env:
         APPLE_API_KEY_BASE64: ${{ inputs.app-store-connect-api-key-base64 }}
         APPLE_API_KEY_ID: ${{ inputs.app-store-connect-api-key-id }}
@@ -57,6 +59,7 @@ runs:
     # Upload the IPA artifact to App Store Connect.
     - name: Upload to App Store Connect
       shell: bash
+      working-directory: ${{ inputs.working-directory }}
       env:
         APPLE_API_KEY_ID: ${{ inputs.app-store-connect-api-key-id }}
         APPLE_API_KEY_ISSUER_ID: ${{ inputs.app-store-connect-api-issuer-id }}
@@ -95,11 +98,13 @@ runs:
 
     - name: Install PyJWT
       shell: bash
+      working-directory: ${{ inputs.working-directory }}
       run: pip3 install pyjwt cryptography --break-system-packages --quiet
 
     - name: Generate App Store Connect JWT
       id: asc_jwt
       shell: bash
+      working-directory: ${{ inputs.working-directory }}
       env:
         APPLE_API_KEY_ID: ${{ inputs.app-store-connect-api-key-id }}
         APPLE_API_KEY_ISSUER_ID: ${{ inputs.app-store-connect-api-issuer-id }}
@@ -202,6 +207,7 @@ runs:
     - name: Post TestFlight release notes
       if: ${{ inputs.release-notes != '' }}
       shell: bash
+      working-directory: ${{ inputs.working-directory }}
       env:
         JWT: ${{ steps.asc_jwt.outputs.jwt }}
         BUILD_ID: ${{ steps.wait_for_build.outputs.build_id }}
@@ -260,6 +266,7 @@ runs:
     - name: Set encryption compliance
       if: ${{ inputs.uses-non-exempt-encryption != '' }}
       shell: bash
+      working-directory: ${{ inputs.working-directory }}
       env:
         JWT: ${{ steps.asc_jwt.outputs.jwt }}
         BUILD_ID: ${{ steps.wait_for_build.outputs.build_id }}

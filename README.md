@@ -32,11 +32,11 @@ The action runs only on **macOS runners** (`runs-on: macos-latest`), since it re
 
 | Name | Required | Default | Description |
 |------|----------|---------|-------------|
-| `ipa-path` | **yes** | — | Path to the pre-built `.ipa` to upload (absolute, or relative to the workspace). |
+| `ipa-path` | **yes** | — | Path to the pre-built `.ipa` to upload (absolute, or relative to `working-directory`). |
 | `app-store-connect-api-key-id` | **yes** | — | App Store Connect API key id (the `kid`). |
 | `app-store-connect-api-issuer-id` | **yes** | — | App Store Connect API issuer id. |
 | `app-store-connect-api-key-base64` | **yes** | — | Base64 of the App Store Connect API private key (`.p8` contents). |
-| `working-directory` | no | `./` | Root of the Flutter app, used to read `pubspec.yaml` (build number) and `ios/Runner.xcodeproj/project.pbxproj` (bundle id). |
+| `working-directory` | no | `./` | Root of the Flutter app. Every step runs here, and it's the base for relative `ipa-path` values. Used to read `pubspec.yaml` (build number) and `ios/Runner.xcodeproj/project.pbxproj` (bundle id). |
 | `release-notes` | no | `""` | TestFlight "What's New" text. Empty skips this step. |
 | `locale` | no | `en-US` | Locale used when creating the beta build localization. |
 | `uses-non-exempt-encryption` | no | `"false"` | Encryption compliance flag. `"false"` for apps using only exempt encryption, `"true"` otherwise. **Empty skips the step** (e.g. when `ITSAppUsesNonExemptEncryption` is declared in `Info.plist`). |
